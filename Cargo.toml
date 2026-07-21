@@ -1,0 +1,23 @@
+[package]
+name = "fforcha"
+description = "FFmpeg Orchestrator"
+authors = ["Linas Nikiperavičius <linas@linasdev.com>"]
+license = "MIT"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+config = "0.15.24"
+async-trait = "0.1.91"
+log = "0.4.33"
+env_logger = "0.11.11"
+futures = "0.3.33"
+inotify = "0.11.4"
+
+[dependencies.serde]
+version = "1.0.228"
+features = ["derive"]
+
+[dependencies.tokio]
+version = "1.53.1"
+features = ["macros", "sync", "fs", "rt-multi-thread"]
