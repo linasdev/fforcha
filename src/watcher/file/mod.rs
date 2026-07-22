@@ -162,7 +162,11 @@ impl FForchaWatcher for FForchaFileWatcher {
                             let canonical_path = match file_asset_path.canonicalize() {
                                 Ok(canonical_path) => canonical_path,
                                 Err(error) => {
-                                    warn!("Failed to canonicalize file path '{}' with error: {}", file_asset_path.display(), error);
+                                    warn!(
+                                        "Failed to canonicalize file path '{}' with error: {}",
+                                        file_asset_path.display(),
+                                        error
+                                    );
                                     return Ok(None);
                                 }
                             };
