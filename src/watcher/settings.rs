@@ -1,7 +1,7 @@
 use crate::watcher::file::settings::FForchaFileWatcherSettings;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct FForchaWatcherSettings {
     #[serde(default = "default_file_watchers")]
     pub file: Vec<FForchaFileWatcherSettings>,

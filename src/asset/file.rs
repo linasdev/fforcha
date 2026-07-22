@@ -35,6 +35,22 @@ impl FForchaFileAsset {
             }
         }
     }
+
+    pub fn is_hidden(&self) -> Option<bool> {
+        match self.path.file_name() {
+            Some(file_name) => match file_name.to_str() {
+                Some(file_name) => Some(file_name.starts_with(".")),
+                None => {
+                    warn!("File has an invalid name: {}", self.path.display());
+                    None
+                }
+            },
+            None => {
+                warn!("File has no name: {}", self.path.display());
+                None
+            }
+        }
+    }
 }
 
 #[async_trait]
