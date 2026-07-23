@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncRead;
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Debug)]
 pub struct FForchaFileAsset {
     path: PathBuf,
 }
@@ -55,6 +55,10 @@ impl FForchaFileAsset {
 
 #[async_trait]
 impl FForchaAsset for FForchaFileAsset {
+    fn key(&self) -> String {
+        self.path.to_string_lossy().to_string()
+    }
+
     async fn async_read(&self) -> Result<Box<dyn AsyncRead>, FForchaAssetError> {
         let file = File::open(self.path.clone()).await?;
         Ok(Box::new(file))

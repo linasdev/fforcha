@@ -7,6 +7,9 @@ pub enum FForchaWatcherError {
     WatchSourceVanished,
 }
 
+#[derive(Debug)]
+pub struct FForchaWatcherErrorWithIndex(pub FForchaWatcherError, pub usize);
+
 impl From<io::Error> for FForchaWatcherError {
     fn from(error: io::Error) -> Self {
         Self::IO(error)
