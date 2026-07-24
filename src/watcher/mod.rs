@@ -1,8 +1,7 @@
 use crate::asset::FForchaAsset;
-use crate::watcher::action::FForchaWatcherAction;
-use crate::watcher::error::{FForchaWatcherError, FForchaWatcherErrorWithIndex};
+use crate::watcher::action::FForchaWatcherActionStream;
+use crate::watcher::error::FForchaWatcherError;
 use async_trait::async_trait;
-use futures::stream::BoxStream;
 
 pub mod action;
 pub mod error;
@@ -13,11 +12,5 @@ pub mod settings;
 pub trait FForchaWatcher: Send + Sync {
     async fn watch(
         &self,
-    ) -> Result<
-        BoxStream<
-            'static,
-            Result<FForchaWatcherAction<Box<dyn FForchaAsset>>, FForchaWatcherErrorWithIndex>,
-        >,
-        FForchaWatcherError,
-    >;
+    ) -> Result<FForchaWatcherActionStream<Box<dyn FForchaAsset>>, FForchaWatcherError>;
 }

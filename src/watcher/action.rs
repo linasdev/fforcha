@@ -1,4 +1,9 @@
 use crate::asset::FForchaAsset;
+use crate::watcher::error::FForchaWatcherErrorWithIndex;
+use futures::stream::BoxStream;
+
+pub type FForchaWatcherActionStream<A> =
+    BoxStream<'static, Result<FForchaWatcherAction<A>, FForchaWatcherErrorWithIndex>>;
 
 #[derive(Debug)]
 pub enum FForchaWatcherAction<A: FForchaAsset> {

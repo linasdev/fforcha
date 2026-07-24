@@ -6,6 +6,7 @@ pub enum FForchaError {
     Asset(FForchaAssetError),
     Watcher(FForchaWatcherError),
     WatcherActionChannelClosed,
+    WatcherDoesNotExist,
 }
 
 impl From<FForchaAssetError> for FForchaError {

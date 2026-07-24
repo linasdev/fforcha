@@ -1,6 +1,6 @@
 use config::Config;
 use fforcha::error::FForchaError;
-use fforcha::runner::run;
+use fforcha::runner::FForchaRunner;
 use fforcha::settings::FForchaSettings;
 use log::info;
 
@@ -20,6 +20,6 @@ async fn main() -> Result<(), FForchaError> {
         "Config loaded, starting FForcha v{}",
         env!("CARGO_PKG_VERSION")
     );
-    run(&settings).await?;
-    Ok(())
+
+    FForchaRunner::new(settings).run().await
 }

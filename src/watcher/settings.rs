@@ -7,6 +7,12 @@ pub struct FForchaWatcherSettings {
     #[serde(default = "default_exit_on_watcher_failure")]
     pub exit_on_watcher_failure: bool,
 
+    #[serde(default)]
+    pub always_restart_watchers: bool,
+
+    #[serde(default = "default_watcher_restart_delay")]
+    pub watcher_restart_delay: Duration,
+
     #[serde(default = "default_watcher_action_debounce_duration")]
     pub watcher_action_debounce_duration: Duration,
 
@@ -18,6 +24,8 @@ impl Default for FForchaWatcherSettings {
     fn default() -> Self {
         Self {
             exit_on_watcher_failure: default_exit_on_watcher_failure(),
+            always_restart_watchers: Default::default(),
+            watcher_restart_delay: default_watcher_restart_delay(),
             watcher_action_debounce_duration: default_watcher_action_debounce_duration(),
             file: default_file_watchers(),
         }
@@ -26,6 +34,10 @@ impl Default for FForchaWatcherSettings {
 
 fn default_exit_on_watcher_failure() -> bool {
     true
+}
+
+fn default_watcher_restart_delay() -> Duration {
+    Duration::from_secs(5)
 }
 
 fn default_watcher_action_debounce_duration() -> Duration {

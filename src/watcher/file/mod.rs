@@ -1,12 +1,11 @@
 use crate::asset::FForchaAsset;
 use crate::asset::file::FForchaFileAsset;
 use crate::watcher::FForchaWatcher;
-use crate::watcher::action::FForchaWatcherAction;
+use crate::watcher::action::{FForchaWatcherAction, FForchaWatcherActionStream};
 use crate::watcher::error::{FForchaWatcherError, FForchaWatcherErrorWithIndex};
 use crate::watcher::file::settings::FForchaFileWatcherSettings;
 use async_trait::async_trait;
 use async_walkdir::WalkDir;
-use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, info, warn};
@@ -37,13 +36,7 @@ impl FForchaFileWatcher {
 
     async fn get_chained_watcher_action_stream(
         &self,
-    ) -> Result<
-        BoxStream<
-            'static,
-            Result<FForchaWatcherAction<FForchaFileAsset>, FForchaWatcherErrorWithIndex>,
-        >,
-        FForchaWatcherError,
-    > {
+    ) -> Result<FForchaWatcherActionStream<FForchaFileAsset>, FForchaWatcherError> {
         let initial_watcher_action_stream = self.get_initial_watcher_action_stream().await;
         let inotify_watcher_action_stream = self.get_inotify_watcher_action_stream().await?;
         let chained_watcher_action_stream =
@@ -53,10 +46,7 @@ impl FForchaFileWatcher {
 
     async fn get_initial_watcher_action_stream(
         &self,
-    ) -> BoxStream<
-        'static,
-        Result<FForchaWatcherAction<FForchaFileAsset>, FForchaWatcherErrorWithIndex>,
-    > {
+    ) -> FForchaWatcherActionStream<FForchaFileAsset> {
         let watcher_index = self.watcher_index;
         WalkDir::new(self.directory_path.clone())
             .map_err(move |error| {
@@ -74,13 +64,7 @@ impl FForchaFileWatcher {
 
     async fn get_inotify_watcher_action_stream(
         &self,
-    ) -> Result<
-        BoxStream<
-            'static,
-            Result<FForchaWatcherAction<FForchaFileAsset>, FForchaWatcherErrorWithIndex>,
-        >,
-        FForchaWatcherError,
-    > {
+    ) -> Result<FForchaWatcherActionStream<FForchaFileAsset>, FForchaWatcherError> {
         let inotify = Inotify::init()?;
         inotify.watches().add(
             self.directory_path.clone(),
@@ -147,13 +131,7 @@ impl FForchaFileWatcher {
 impl FForchaWatcher for FForchaFileWatcher {
     async fn watch(
         &self,
-    ) -> Result<
-        BoxStream<
-            'static,
-            Result<FForchaWatcherAction<Box<dyn FForchaAsset>>, FForchaWatcherErrorWithIndex>,
-        >,
-        FForchaWatcherError,
-    > {
+    ) -> Result<FForchaWatcherActionStream<Box<dyn FForchaAsset>>, FForchaWatcherError> {
         info!(
             "Starting file watcher for directory: {}",
             self.directory_path.display()
