@@ -5,6 +5,8 @@ pub enum FForchaWatcherError {
     IO(io::Error),
     WalkDir(async_walkdir::Error),
     WatchSourceVanished,
+    WatcherActionChannelClosed,
+    WatcherDoesNotExist,
 }
 
 #[derive(Debug)]

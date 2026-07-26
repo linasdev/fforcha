@@ -5,8 +5,6 @@ use crate::watcher::error::FForchaWatcherError;
 pub enum FForchaError {
     Asset(FForchaAssetError),
     Watcher(FForchaWatcherError),
-    WatcherActionChannelClosed,
-    WatcherDoesNotExist,
 }
 
 impl From<FForchaAssetError> for FForchaError {

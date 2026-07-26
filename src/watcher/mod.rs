@@ -6,6 +6,7 @@ use async_trait::async_trait;
 pub mod action;
 pub mod error;
 pub mod file;
+pub mod runner;
 pub mod settings;
 
 #[async_trait]
