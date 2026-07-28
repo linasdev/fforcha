@@ -14,6 +14,10 @@ env_logger = "0.11.11"
 futures = "0.3.33"
 async-walkdir = "2.1.0"
 inotify = "0.11.4"
+http = "1.4.2"
+scc = "3.8.6"
+serde_json = "1.0.151"
+nanoid = "0.5.0"
 
 [dependencies.serde]
 version = "1.0.228"
@@ -26,3 +30,7 @@ features = ["macros", "sync", "fs", "rt-multi-thread"]
 [dependencies.tokio-util]
 version = "0.7.19"
 features = ["time"]
+
+[dependencies.tokio-websockets]
+version = "0.13.3"
+features = ["client", "server", "ring", "rand", "rustls-native-roots"]

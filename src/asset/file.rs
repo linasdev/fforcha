@@ -3,6 +3,7 @@ use crate::asset::error::FForchaAssetError;
 use async_trait::async_trait;
 use log::{debug, warn};
 use std::path::PathBuf;
+use std::pin::Pin;
 use tokio::fs::File;
 use tokio::io::AsyncRead;
 
@@ -59,8 +60,8 @@ impl FForchaAsset for FForchaFileAsset {
         self.path.to_string_lossy().to_string()
     }
 
-    async fn async_read(&self) -> Result<Box<dyn AsyncRead>, FForchaAssetError> {
+    async fn async_read(&self) -> Result<Pin<Box<dyn AsyncRead + Send + Sync>>, FForchaAssetError> {
         let file = File::open(self.path.clone()).await?;
-        Ok(Box::new(file))
+        Ok(Box::pin(file))
     }
 }

@@ -1,15 +1,15 @@
-use crate::asset::error::FForchaAssetError;
+use crate::server::error::FForchaServerError;
 use crate::watcher::error::FForchaWatcherError;
 
 #[derive(Debug)]
 pub enum FForchaError {
-    Asset(FForchaAssetError),
+    Server(FForchaServerError),
     Watcher(FForchaWatcherError),
 }
 
-impl From<FForchaAssetError> for FForchaError {
-    fn from(error: FForchaAssetError) -> Self {
-        Self::Asset(error)
+impl From<FForchaServerError> for FForchaError {
+    fn from(error: FForchaServerError) -> Self {
+        Self::Server(error)
     }
 }
 

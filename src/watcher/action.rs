@@ -1,6 +1,7 @@
 use crate::asset::FForchaAsset;
 use crate::watcher::error::FForchaWatcherErrorWithIndex;
 use futures::stream::BoxStream;
+use std::sync::Arc;
 
 pub type FForchaWatcherActionStream<A> =
     BoxStream<'static, Result<FForchaWatcherAction<A>, FForchaWatcherErrorWithIndex>>;
@@ -12,10 +13,10 @@ pub enum FForchaWatcherAction<A: FForchaAsset> {
 }
 
 impl<A: FForchaAsset + 'static> FForchaWatcherAction<A> {
-    pub fn key(&self) -> String {
+    pub fn debounce_key(&self) -> Option<String> {
         match self {
-            FForchaWatcherAction::Queue(asset) => asset.key() + ":queue",
-            FForchaWatcherAction::DeQueue(asset) => asset.key() + ":dequeue",
+            FForchaWatcherAction::Queue(asset) => Some(asset.key() + ":queue"),
+            FForchaWatcherAction::DeQueue(_) => None,
         }
     }
 
@@ -26,10 +27,10 @@ impl<A: FForchaAsset + 'static> FForchaWatcherAction<A> {
         }
     }
 
-    pub fn into_boxed(self) -> FForchaWatcherAction<Box<dyn FForchaAsset>> {
+    pub fn into_arc(self) -> FForchaWatcherAction<Arc<dyn FForchaAsset>> {
         match self {
-            FForchaWatcherAction::Queue(asset) => FForchaWatcherAction::Queue(Box::new(asset)),
-            FForchaWatcherAction::DeQueue(asset) => FForchaWatcherAction::DeQueue(Box::new(asset)),
+            FForchaWatcherAction::Queue(asset) => FForchaWatcherAction::Queue(Arc::new(asset)),
+            FForchaWatcherAction::DeQueue(asset) => FForchaWatcherAction::DeQueue(Arc::new(asset)),
         }
     }
 }

@@ -10,6 +10,7 @@ use futures::{StreamExt, TryStreamExt};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, info, warn};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub mod settings;
 
@@ -131,7 +132,7 @@ impl FForchaFileWatcher {
 impl FForchaWatcher for FForchaFileWatcher {
     async fn watch(
         &self,
-    ) -> Result<FForchaWatcherActionStream<Box<dyn FForchaAsset>>, FForchaWatcherError> {
+    ) -> Result<FForchaWatcherActionStream<Arc<dyn FForchaAsset>>, FForchaWatcherError> {
         info!(
             "Starting file watcher for directory: {}",
             self.directory_path.display()
@@ -196,7 +197,7 @@ impl FForchaWatcher for FForchaFileWatcher {
                             Ok(Some(
                                 watcher_action
                                     .map(|_| FForchaFileAsset::new(canonical_path))
-                                    .into_boxed(),
+                                    .into_arc(),
                             ))
                         }
                     }
