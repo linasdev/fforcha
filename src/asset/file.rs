@@ -57,7 +57,7 @@ impl FForchaFileAsset {
 #[async_trait]
 impl FForchaAsset for FForchaFileAsset {
     fn key(&self) -> String {
-        self.path.to_string_lossy().to_string()
+        format!("file://{}", self.path.to_string_lossy())
     }
 
     async fn async_read(&self) -> Result<Pin<Box<dyn AsyncRead + Send + Sync>>, FForchaAssetError> {
