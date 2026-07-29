@@ -193,7 +193,7 @@ impl FForchaServerQueue {
             if let Some(mut task_ids) = self.asset_key_to_task_ids.get_async(&asset_key).await {
                 task_ids
                     .deref_mut()
-                    .retain(|current_task_id| current_task_id == &task_id);
+                    .retain(|current_task_id| current_task_id != &task_id);
 
                 if task_ids.is_empty() {
                     let _ = task_ids.remove_entry();
