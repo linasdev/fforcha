@@ -1,4 +1,5 @@
 use crate::server::queue::runner::FForchaServerQueueRunner;
+use crate::server::settings::FForchaServerWorkerSettings;
 use crate::server::worker::state::FForchaServerWorkerState;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -11,6 +12,7 @@ pub mod state;
 pub struct FForchaServerWorker {
     id: String,
     server_queue_runner: FForchaServerQueueRunner,
+    settings: FForchaServerWorkerSettings,
     next_state_future: BoxFuture<'static, Option<FForchaServerWorkerState>>,
 }
 
@@ -18,10 +20,12 @@ impl FForchaServerWorker {
     pub fn new(
         worker_state_future: BoxFuture<'static, FForchaServerWorkerState>,
         server_queue_runner: FForchaServerQueueRunner,
+        settings: FForchaServerWorkerSettings,
     ) -> Self {
         Self {
             id: nanoid!(),
             server_queue_runner,
+            settings,
             next_state_future: worker_state_future.map(Some).boxed(),
         }
     }
@@ -36,8 +40,13 @@ impl Future for FForchaServerWorker {
                 Some(worker_state) => Poll::Ready(Some(FForchaServerWorker {
                     id: self.id.clone(),
                     server_queue_runner: self.server_queue_runner.clone(),
+                    settings: self.settings,
                     next_state_future: worker_state
-                        .process(self.id.clone(), self.server_queue_runner.clone())
+                        .process(
+                            self.id.clone(),
+                            self.server_queue_runner.clone(),
+                            self.settings,
+                        )
                         .boxed(),
                 })),
                 None => Poll::Ready(None),

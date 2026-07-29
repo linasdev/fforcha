@@ -211,6 +211,10 @@ pub struct FForchaServerQueueTaskPermit {
 }
 
 impl FForchaServerQueueTaskPermit {
+    pub fn task(&self) -> &FForchaTask {
+        &self.task
+    }
+
     pub fn task_and_cancel_receiver(&mut self) -> (&FForchaTask, &mut oneshot::Receiver<()>) {
         (&self.task, &mut self.cancel_receiver)
     }

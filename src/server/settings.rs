@@ -23,6 +23,12 @@ pub struct FForchaServerSettings {
     #[serde(default)]
     pub tls_key_path: Option<PathBuf>,
 
+    #[serde(default)]
+    pub worker: FForchaServerWorkerSettings,
+}
+
+#[derive(Deserialize, Debug, Copy, Clone)]
+pub struct FForchaServerWorkerSettings {
     #[serde(default = "default_asset_buffer_size")]
     pub asset_buffer_size: usize,
 
@@ -39,6 +45,14 @@ impl Default for FForchaServerSettings {
             bind_port: default_bind_port(),
             tls_certificate_path: Default::default(),
             tls_key_path: Default::default(),
+            worker: Default::default(),
+        }
+    }
+}
+
+impl Default for FForchaServerWorkerSettings {
+    fn default() -> Self {
+        Self {
             asset_buffer_size: default_asset_buffer_size(),
             worker_timeout: default_worker_timeout(),
         }

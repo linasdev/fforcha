@@ -53,7 +53,7 @@ impl FForchaServerRunner {
         let server_runner_join_handle = tokio::spawn(async move {
             let server_result = loop {
                 select! {
-                    connection_result = tcp_listener.accept() => workers.push(FForchaServerWorker::new(server_runner.clone().handle_accepted_connection_result(connection_result).boxed(), server_runner.server_queue_runner.clone())),
+                    connection_result = tcp_listener.accept() => workers.push(FForchaServerWorker::new(server_runner.clone().handle_accepted_connection_result(connection_result).boxed(), server_runner.server_queue_runner.clone(), server_runner.settings.worker)),
                     Some(Some(worker)) = workers.next(), if !workers.is_empty() => workers.push(worker),
                     _ = shutdown_receiver.recv() => {
                         info!("Received shutdown signal, exiting server runner");
