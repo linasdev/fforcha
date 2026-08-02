@@ -11,10 +11,9 @@ use http::header::AUTHORIZATION;
 use log::{info, warn};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
-use tokio::task::JoinHandle;
-use tokio::{io, select};
 use tokio_websockets::ServerBuilder;
 
 pub struct FForchaServerRunner {
@@ -36,11 +35,11 @@ impl FForchaServerRunner {
             FForchaWatcherAction<Arc<dyn FForchaAsset>>,
         >,
         mut shutdown_receiver: broadcast::Receiver<()>,
-    ) -> Result<JoinHandle<Result<(), FForchaServerError>>, FForchaServerError> {
+    ) -> Result<(), FForchaServerError> {
         info!("Starting FForcha server runner");
 
         let server_runner = Arc::new(self);
-        let server_queue_runner_join_handle = server_runner
+        let server_queue_future = server_runner
             .server_queue_runner
             .run(watcher_action_receiver);
 
@@ -50,25 +49,23 @@ impl FForchaServerRunner {
         ))
         .await?;
         let mut workers = FuturesUnordered::new();
-        let server_runner_join_handle = tokio::spawn(async move {
-            let server_result = loop {
-                select! {
+        let server_future = async {
+            loop {
+                tokio::select! {
                     connection_result = tcp_listener.accept() => workers.push(FForchaServerWorker::new(server_runner.clone().handle_accepted_connection_result(connection_result).boxed(), server_runner.server_queue_runner.clone(), server_runner.settings.worker)),
                     Some(Some(worker)) = workers.next(), if !workers.is_empty() => workers.push(worker),
                     _ = shutdown_receiver.recv() => {
                         info!("Received shutdown signal, exiting server runner");
-                        break Ok(());
+                        break;
                     }
                 }
-            };
+            }
+        };
 
-            server_queue_runner_join_handle
-                .await
-                .expect("Failed to join server queue runner");
-            server_result
-        });
-
-        Ok(server_runner_join_handle)
+        tokio::select! {
+            _ = server_queue_future => Ok(()),
+            _ = server_future => Ok(())
+        }
     }
 
     async fn handle_accepted_connection_result(

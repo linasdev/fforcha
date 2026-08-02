@@ -10,8 +10,7 @@ use log::{error, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::select;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::time::DelayQueue;
 
 pub struct FForchaWatcherRunner {
@@ -30,7 +29,8 @@ impl FForchaWatcherRunner {
     pub async fn run(
         mut self,
         watcher_action_sender: mpsc::UnboundedSender<FForchaWatcherAction<Arc<dyn FForchaAsset>>>,
-    ) -> Result<JoinHandle<Result<(), FForchaWatcherError>>, FForchaWatcherError> {
+        mut shutdown_receiver: broadcast::Receiver<()>,
+    ) -> Result<(), FForchaWatcherError> {
         info!("Starting FForcha watcher runner");
 
         self.prepare_watchers();
@@ -49,96 +49,96 @@ impl FForchaWatcherRunner {
         let mut watcher_action_delay_queue = DelayQueue::new();
         let mut watcher_restart_delay_queue = DelayQueue::new();
         let mut combined_watcher_action_stream_finished = false;
-        let watcher_runner_join_handle = tokio::spawn(async move {
-            loop {
-                select! {
-                    Some(watcher_index) = watcher_restart_delay_queue.next(), if !watcher_restart_delay_queue.is_empty() => {
-                        let watcher_index = watcher_index.into_inner();
+        loop {
+            select! {
+                Some(watcher_index) = watcher_restart_delay_queue.next(), if !watcher_restart_delay_queue.is_empty() => {
+                    let watcher_index = watcher_index.into_inner();
 
-                        warn!("Restarting watcher");
+                    warn!("Restarting watcher");
 
-                        match self.restart_watcher_with_index(watcher_index).await {
-                            Ok(watcher_action_stream) => {
-                                combined_watcher_action_stream.push(watcher_action_stream);
-                                info!("Successfully restarted watcher");
-                            }
-                            Err(error) => {
-                                warn!("Failed to restart watcher with error: {:?}", error);
-
-                                if always_restart_watchers {
-                                    watcher_restart_delay_queue.insert(watcher_index, watcher_restart_delay);
-                                }
-                            }
+                    match self.restart_watcher_with_index(watcher_index).await {
+                        Ok(watcher_action_stream) => {
+                            combined_watcher_action_stream.push(watcher_action_stream);
+                            info!("Successfully restarted watcher");
                         }
-                    }
-                    Some(debounced_watcher_action_key) = watcher_action_delay_queue.next(), if !watcher_action_delay_queue.is_empty() => {
-                        let debounced_watcher_action_key = debounced_watcher_action_key.into_inner();
-                        if let Some((watcher_action, _)) = queued_watcher_actions.remove(&debounced_watcher_action_key) {
-                            if watcher_action_sender.send(watcher_action).is_err() {
-                                error!("Failed to send watcher action through channel, exiting watcher runner");
-                                break Err(FForchaWatcherError::WatcherActionChannelClosed);
+                        Err(error) => {
+                            warn!("Failed to restart watcher with error: {:?}", error);
+
+                            if always_restart_watchers {
+                                watcher_restart_delay_queue.insert(watcher_index, watcher_restart_delay);
                             }
-                        }
-                    }
-                    watcher_action_result_option = combined_watcher_action_stream.next(), if !combined_watcher_action_stream.is_empty() => {
-                        match watcher_action_result_option {
-                            Some(Ok(next_watcher_action)) => {
-                                combined_watcher_action_stream_finished = false;
-
-                                if let Some(watcher_action_debounce_key) = next_watcher_action.debounce_key() {
-                                    if let Some((watcher_action, delay_queue_key)) = queued_watcher_actions.get_mut(&watcher_action_debounce_key) {
-                                        watcher_action_delay_queue.reset(&delay_queue_key, watcher_action_debounce_duration);
-                                        *watcher_action = next_watcher_action;
-                                    } else {
-                                        let delay_queue_key = watcher_action_delay_queue.insert(watcher_action_debounce_key.clone(), watcher_action_debounce_duration);
-                                        queued_watcher_actions.insert(watcher_action_debounce_key, (next_watcher_action, delay_queue_key));
-                                    }
-                                } else {
-                                    if watcher_action_sender.send(next_watcher_action).is_err() {
-                                        error!("Failed to send watcher action through channel, exiting watcher runner");
-                                        break Err(FForchaWatcherError::WatcherActionChannelClosed);
-                                    }
-                                }
-                            }
-                            Some(Err(FForchaWatcherErrorWithIndex(error, watcher_index))) => {
-                                if exit_on_watcher_failure {
-                                    error!("Exiting watcher runner because of watcher error: {error:?}");
-                                    break Err(error);
-                                }
-
-                                warn!("Restarting watcher because of watcher error: {error:?}");
-
-                                match self.restart_watcher_with_index(watcher_index).await {
-                                    Ok(watcher_action_stream) => {
-                                        combined_watcher_action_stream.push(watcher_action_stream);
-                                        info!("Successfully restarted watcher");
-                                    }
-                                    Err(error) => {
-                                        warn!("Failed to restart watcher with error: {:?}", error);
-
-                                        if always_restart_watchers {
-                                            watcher_restart_delay_queue.insert(watcher_index, watcher_restart_delay);
-                                        }
-                                    }
-                                }
-                            }
-                            None if !combined_watcher_action_stream_finished => {
-                                combined_watcher_action_stream_finished = true;
-                                if watcher_restart_delay_queue.is_empty() {
-                                    info!("All watchers finished, exiting watcher runner");
-                                    break Ok(());
-                                }
-
-                                info!("All watchers finished, waiting for restart");
-                            }
-                            None => {}
                         }
                     }
                 }
-            }
-        });
+                Some(debounced_watcher_action_key) = watcher_action_delay_queue.next(), if !watcher_action_delay_queue.is_empty() => {
+                    let debounced_watcher_action_key = debounced_watcher_action_key.into_inner();
+                    if let Some((watcher_action, _)) = queued_watcher_actions.remove(&debounced_watcher_action_key) {
+                        if watcher_action_sender.send(watcher_action).is_err() {
+                            error!("Failed to send watcher action through channel, exiting watcher runner");
+                            break Err(FForchaWatcherError::WatcherActionChannelClosed);
+                        }
+                    }
+                }
+                watcher_action_result_option = combined_watcher_action_stream.next(), if !combined_watcher_action_stream.is_empty() => {
+                    match watcher_action_result_option {
+                        Some(Ok(next_watcher_action)) => {
+                            combined_watcher_action_stream_finished = false;
 
-        Ok(watcher_runner_join_handle)
+                            if let Some(watcher_action_debounce_key) = next_watcher_action.debounce_key() {
+                                if let Some((watcher_action, delay_queue_key)) = queued_watcher_actions.get_mut(&watcher_action_debounce_key) {
+                                    watcher_action_delay_queue.reset(&delay_queue_key, watcher_action_debounce_duration);
+                                    *watcher_action = next_watcher_action;
+                                } else {
+                                    let delay_queue_key = watcher_action_delay_queue.insert(watcher_action_debounce_key.clone(), watcher_action_debounce_duration);
+                                    queued_watcher_actions.insert(watcher_action_debounce_key, (next_watcher_action, delay_queue_key));
+                                }
+                            } else {
+                                if watcher_action_sender.send(next_watcher_action).is_err() {
+                                    error!("Failed to send watcher action through channel, exiting watcher runner");
+                                    break Err(FForchaWatcherError::WatcherActionChannelClosed);
+                                }
+                            }
+                        }
+                        Some(Err(FForchaWatcherErrorWithIndex(error, watcher_index))) => {
+                            if exit_on_watcher_failure {
+                                error!("Exiting watcher runner because of watcher error: {error:?}");
+                                break Err(error);
+                            }
+
+                            warn!("Restarting watcher because of watcher error: {error:?}");
+
+                            match self.restart_watcher_with_index(watcher_index).await {
+                                Ok(watcher_action_stream) => {
+                                    combined_watcher_action_stream.push(watcher_action_stream);
+                                    info!("Successfully restarted watcher");
+                                }
+                                Err(error) => {
+                                    warn!("Failed to restart watcher with error: {:?}", error);
+
+                                    if always_restart_watchers {
+                                        watcher_restart_delay_queue.insert(watcher_index, watcher_restart_delay);
+                                    }
+                                }
+                            }
+                        }
+                        None if !combined_watcher_action_stream_finished => {
+                            combined_watcher_action_stream_finished = true;
+                            if watcher_restart_delay_queue.is_empty() {
+                                info!("All watchers finished, exiting watcher runner");
+                                break Ok(());
+                            }
+
+                            info!("All watchers finished, waiting for restart");
+                        }
+                        None => {}
+                    }
+                }
+                _ = shutdown_receiver.recv() => {
+                    info!("Received shutdown signal, exiting watcher runner");
+                    break Ok(());
+                }
+            }
+        }
     }
 
     fn prepare_watchers(&mut self) {
