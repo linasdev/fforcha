@@ -34,3 +34,6 @@ features = ["time"]
 [dependencies.tokio-websockets]
 version = "0.13.3"
 features = ["client", "server", "ring", "rand", "rustls-native-roots"]
+
+[dev-dependencies]
+googletest = "0.14.3"

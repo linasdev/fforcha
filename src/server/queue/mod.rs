@@ -235,3 +235,187 @@ impl Debug for FForchaServerQueueTaskPermit {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asset::file::FForchaFileAsset;
+    use googletest::prelude::*;
+    use nanoid::nanoid;
+    use std::hash::Hash;
+    use std::ops::Deref;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_push_task_to_queue_when_queue_is_empty() {
+        let target = FForchaServerQueue::new();
+
+        let input_asset = FForchaFileAsset::new("/path/to/file.ext".into());
+        let task = FForchaTask::new(Arc::new(input_asset));
+
+        target.push(task.clone()).await;
+
+        let asset_key_to_task_ids = get_vec_of_hash_map(&target.asset_key_to_task_ids);
+        let task_id_to_asset_key = get_vec_of_hash_map(&target.task_id_to_asset_key);
+        let tasks = get_vec_of_hash_map(&target.tasks);
+        assert_that!(
+            asset_key_to_task_ids,
+            unordered_elements_are![(eq("file:///path/to/file.ext"), elements_are![&task.id()])]
+        );
+        assert_that!(
+            task_id_to_asset_key,
+            unordered_elements_are![(eq(&task.id()), eq("file:///path/to/file.ext"))]
+        );
+        assert_that!(
+            tasks,
+            unordered_elements_are![(
+                eq(&task.id()),
+                predicate(|t: &FForchaTask| {
+                    t.id() == task.id() && t.input_asset().key() == "file:///path/to/file.ext"
+                })
+            ),]
+        );
+        assert_that!(target.cancel_senders.len(), eq(0));
+        assert_that!(
+            target.available_task_ids.lock().await.deref(),
+            unordered_elements_are![eq(&task.id())]
+        );
+        assert_that!(target.semaphore.available_permits(), eq(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_push_task_to_queue_when_queue_is_not_empty() {
+        let queued_input_asset = FForchaFileAsset::new("/path/to/queued-file.ext".into());
+        let queued_task = FForchaTask::new(Arc::new(queued_input_asset));
+        let target = FForchaServerQueue::new();
+        target.push(queued_task.clone()).await;
+
+        let input_asset = FForchaFileAsset::new("/path/to/file.ext".into());
+        let task = FForchaTask::new(Arc::new(input_asset));
+
+        target.push(task.clone()).await;
+
+        let asset_key_to_task_ids = get_vec_of_hash_map(&target.asset_key_to_task_ids);
+        let task_id_to_asset_key = get_vec_of_hash_map(&target.task_id_to_asset_key);
+        let tasks = get_vec_of_hash_map(&target.tasks);
+        assert_that!(
+            asset_key_to_task_ids,
+            unordered_elements_are![
+                (
+                    eq("file:///path/to/queued-file.ext"),
+                    elements_are![&queued_task.id()]
+                ),
+                (eq("file:///path/to/file.ext"), elements_are![&task.id()]),
+            ]
+        );
+        assert_that!(
+            task_id_to_asset_key,
+            unordered_elements_are![
+                (eq(&queued_task.id()), eq("file:///path/to/queued-file.ext")),
+                (eq(&task.id()), eq("file:///path/to/file.ext")),
+            ]
+        );
+        assert_that!(
+            tasks,
+            unordered_elements_are![
+                (
+                    eq(&queued_task.id()),
+                    predicate(|t: &FForchaTask| {
+                        t.id() == queued_task.id()
+                            && t.input_asset().key() == "file:///path/to/queued-file.ext"
+                    })
+                ),
+                (
+                    eq(&task.id()),
+                    predicate(|t: &FForchaTask| {
+                        t.id() == task.id() && t.input_asset().key() == "file:///path/to/file.ext"
+                    })
+                ),
+            ]
+        );
+        assert_that!(target.cancel_senders.len(), eq(0));
+        assert_that!(
+            target.available_task_ids.lock().await.deref(),
+            unordered_elements_are![eq(&queued_task.id()), eq(&task.id())]
+        );
+        assert_that!(target.semaphore.available_permits(), eq(2));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_remove_task_from_queue_when_task_exists_and_is_not_popped() {
+        let queued_input_asset = FForchaFileAsset::new("/path/to/queued-file.ext".into());
+        let queued_task = FForchaTask::new(Arc::new(queued_input_asset));
+        let target = FForchaServerQueue::new();
+        target.push(queued_task.clone()).await;
+
+        target.remove(queued_task.id()).await;
+
+        let asset_key_to_task_ids = get_vec_of_hash_map(&target.asset_key_to_task_ids);
+        let task_id_to_asset_key = get_vec_of_hash_map(&target.task_id_to_asset_key);
+        let tasks = get_vec_of_hash_map(&target.tasks);
+        assert_that!(asset_key_to_task_ids, is_empty());
+        assert_that!(task_id_to_asset_key, is_empty());
+        assert_that!(tasks, is_empty());
+        assert_that!(target.cancel_senders.len(), eq(0));
+        assert_that!(target.available_task_ids.lock().await.deref(), is_empty());
+        assert_that!(target.semaphore.available_permits(), eq(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_remove_task_from_queue_when_task_exists_and_is_popped() {
+        let queued_input_asset = FForchaFileAsset::new("/path/to/queued-file.ext".into());
+        let queued_task = FForchaTask::new(Arc::new(queued_input_asset));
+        let target = FForchaServerQueue::new();
+        target.push(queued_task.clone()).await;
+        let mut permit = target.start_pop().await;
+        let join_handle = tokio::spawn(async move {
+            let (_, cancel_receiver) = permit.task_and_cancel_receiver();
+            cancel_receiver
+                .await
+                .expect("Failed to receive cancel signal");
+        });
+
+        target.remove(queued_task.id()).await;
+
+        let asset_key_to_task_ids = get_vec_of_hash_map(&target.asset_key_to_task_ids);
+        let task_id_to_asset_key = get_vec_of_hash_map(&target.task_id_to_asset_key);
+        let tasks = get_vec_of_hash_map(&target.tasks);
+        assert_that!(asset_key_to_task_ids, is_empty());
+        assert_that!(task_id_to_asset_key, is_empty());
+        assert_that!(tasks, is_empty());
+        assert_that!(target.cancel_senders.len(), eq(0));
+        assert_that!(target.available_task_ids.lock().await.deref(), is_empty());
+        assert_that!(target.semaphore.available_permits(), eq(0));
+
+        join_handle.await.expect("Failed to join task");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_not_remove_task_from_queue_when_task_does_not_exist() {
+        let target = FForchaServerQueue::new();
+
+        target.remove(nanoid!()).await;
+
+        let asset_key_to_task_ids = get_vec_of_hash_map(&target.asset_key_to_task_ids);
+        let task_id_to_asset_key = get_vec_of_hash_map(&target.task_id_to_asset_key);
+        let tasks = get_vec_of_hash_map(&target.tasks);
+        assert_that!(asset_key_to_task_ids, is_empty());
+        assert_that!(task_id_to_asset_key, is_empty());
+        assert_that!(tasks, is_empty());
+        assert_that!(target.cancel_senders.len(), eq(0));
+        assert_that!(target.available_task_ids.lock().await.deref(), is_empty());
+        assert_that!(target.semaphore.available_permits(), eq(0));
+    }
+
+    fn get_vec_of_hash_map<K: Eq + Hash + Clone + Debug, V: Clone + Debug>(
+        map: &HashMap<K, V>,
+    ) -> Vec<(K, V)> {
+        let mut drained = vec![];
+
+        map.retain_sync(|key, value| {
+            drained.push((key.clone(), value.clone()));
+            false
+        });
+
+        drained
+    }
+}
