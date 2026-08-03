@@ -1,31 +1,32 @@
 use crate::asset::FForchaAsset;
+use crate::server::authenticator::FForchaServerAuthenticator;
 use crate::server::error::FForchaServerError;
 use crate::server::queue::runner::FForchaServerQueueRunner;
 use crate::server::settings::FForchaServerSettings;
 use crate::server::worker::FForchaServerWorker;
-use crate::server::worker::state::FForchaServerWorkerState;
 use crate::watcher::action::FForchaWatcherAction;
+use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt};
-use http::header::AUTHORIZATION;
 use log::{info, warn};
-use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
-use tokio_websockets::ServerBuilder;
 
 pub struct FForchaServerRunner {
     settings: FForchaServerSettings,
     server_queue_runner: FForchaServerQueueRunner,
+    authenticator: FForchaServerAuthenticator,
 }
 
 impl FForchaServerRunner {
     pub fn new(settings: FForchaServerSettings) -> Self {
+        let server_queue_runner = FForchaServerQueueRunner::new();
+        let authenticator = FForchaServerAuthenticator::new(settings.shared_secret.clone());
+
         Self {
             settings,
-            server_queue_runner: FForchaServerQueueRunner::new(),
+            server_queue_runner,
+            authenticator,
         }
     }
 
@@ -52,7 +53,14 @@ impl FForchaServerRunner {
         let server_future = async {
             loop {
                 tokio::select! {
-                    connection_result = tcp_listener.accept() => workers.push(FForchaServerWorker::new(server_runner.clone().handle_accepted_connection_result(connection_result).boxed(), server_runner.server_queue_runner.clone(), server_runner.settings.worker)),
+                    accept_result = tcp_listener.accept() => match accept_result {
+                        Ok((tcp_stream, _)) => {
+                            workers.push(FForchaServerWorker::new(tcp_stream, server_runner.server_queue_runner.clone(), server_runner.authenticator.clone(), server_runner.settings.worker));
+                        }
+                        Err(error) => {
+                            warn!("Failed to accept worker connection: {:?}", error);
+                        }
+                    },
                     Some(Some(worker)) = workers.next(), if !workers.is_empty() => workers.push(worker),
                     _ = shutdown_receiver.recv() => {
                         info!("Received shutdown signal, exiting server runner");
@@ -66,65 +74,5 @@ impl FForchaServerRunner {
             _ = server_queue_future => Ok(()),
             _ = server_future => Ok(())
         }
-    }
-
-    async fn handle_accepted_connection_result(
-        self: Arc<Self>,
-        connection_result: io::Result<(TcpStream, SocketAddr)>,
-    ) -> FForchaServerWorkerState {
-        let tcp_stream = match connection_result {
-            Ok((tcp_stream, _)) => tcp_stream,
-            Err(error) => {
-                warn!("Failed to open worker connection");
-                return FForchaServerWorkerState::Error {
-                    web_socket_stream: None,
-                    error: FForchaServerError::IO(error),
-                };
-            }
-        };
-
-        let server_result = ServerBuilder::new().accept(tcp_stream).await;
-        let web_socket_stream = match server_result {
-            Ok((request, web_socket_stream)) => match request.headers().get(AUTHORIZATION) {
-                Some(header_value) => match header_value.to_str() {
-                    Ok(header_value)
-                        if header_value
-                            == format!("Bearer {}", self.settings.shared_secret).as_str() =>
-                    {
-                        web_socket_stream
-                    }
-                    Ok(header_value) => {
-                        warn!("Invalid authorization header: {header_value}");
-                        return FForchaServerWorkerState::Error {
-                            web_socket_stream: Some(web_socket_stream),
-                            error: FForchaServerError::UnauthorizedWorker(request),
-                        };
-                    }
-                    Err(error) => {
-                        warn!("Failed to convert header value to string: {:?}", error);
-                        return FForchaServerWorkerState::Error {
-                            web_socket_stream: Some(web_socket_stream),
-                            error: FForchaServerError::UnauthorizedWorker(request),
-                        };
-                    }
-                },
-                None => {
-                    warn!("No authorization header found");
-                    return FForchaServerWorkerState::Error {
-                        web_socket_stream: Some(web_socket_stream),
-                        error: FForchaServerError::UnauthorizedWorker(request),
-                    };
-                }
-            },
-            Err(error) => {
-                warn!("Failed to open worker connection");
-                return FForchaServerWorkerState::Error {
-                    web_socket_stream: None,
-                    error: FForchaServerError::WebSockets(error),
-                };
-            }
-        };
-
-        FForchaServerWorkerState::Idle { web_socket_stream }
     }
 }
