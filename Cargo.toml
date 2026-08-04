@@ -18,6 +18,7 @@ http = "1.4.2"
 scc = "3.8.6"
 serde_json = "1.0.151"
 nanoid = "0.5.0"
+rustls-pemfile = "2.2.0"
 
 [dependencies.serde]
 version = "1.0.228"
@@ -34,6 +35,16 @@ features = ["time"]
 [dependencies.tokio-websockets]
 version = "0.13.3"
 features = ["client", "server", "ring", "rand", "rustls-native-roots"]
+
+[dependencies.tokio-rustls]
+version = "0.26.4"
+default-features = false
+features = ["ring"]
+
+[dependencies.rustls]
+version = "0.23.43"
+default-features = false
+features = ["ring"]
 
 [dev-dependencies]
 googletest = "0.14.3"

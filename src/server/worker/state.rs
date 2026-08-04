@@ -6,6 +6,7 @@ use crate::server::error::FForchaServerError;
 use crate::server::queue::FForchaServerQueueTaskPermit;
 use crate::server::queue::runner::FForchaServerQueueRunner;
 use crate::server::settings::FForchaServerWorkerSettings;
+use crate::server::worker::stream::{FForchaServerMaybeTlsStream, FForchaServerWorkerStream};
 use futures::future::{BoxFuture, OptionFuture};
 use futures::{FutureExt, SinkExt, TryStream, TryStreamExt, stream};
 use log::{debug, info, trace, warn};
@@ -16,36 +17,39 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::time::sleep;
-use tokio_websockets::{CloseCode, Message, ServerBuilder, WebSocketStream};
+use tokio_rustls::TlsAcceptor;
+use tokio_websockets::{CloseCode, Message, ServerBuilder};
 
-struct FForchaServerWorkerError(FForchaServerError, Option<WebSocketStream<TcpStream>>);
+struct FForchaServerWorkerError(FForchaServerError, Option<FForchaServerWorkerStream>);
 
 pub enum FForchaServerWorkerState {
     Establishing {
         tcp_stream: TcpStream,
+        tls_acceptor: Option<TlsAcceptor>,
+        authenticator: FForchaServerAuthenticator,
     },
     Idle {
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
     },
     Running {
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         server_queue_task_permit: FForchaServerQueueTaskPermit,
         last_progress: f32,
     },
     Finishing {
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         server_queue_task_permit: FForchaServerQueueTaskPermit,
     },
     Cancelling {
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         server_queue_task_permit: FForchaServerQueueTaskPermit,
     },
     Error {
-        web_socket_stream: Option<WebSocketStream<TcpStream>>,
+        worker_stream: Option<FForchaServerWorkerStream>,
         error: FForchaServerError,
     },
     Closing {
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         reason: String,
     },
 }
@@ -55,14 +59,13 @@ impl FForchaServerWorkerState {
         self,
         worker_id: String,
         server_queue_runner: FForchaServerQueueRunner,
-        authenticator: FForchaServerAuthenticator,
         settings: FForchaServerWorkerSettings,
     ) -> Option<Self> {
-        self.try_process(worker_id, server_queue_runner, authenticator, settings)
+        self.try_process(worker_id, server_queue_runner, settings)
             .await
-            .unwrap_or_else(|FForchaServerWorkerError(error, web_socket_stream)| {
+            .unwrap_or_else(|FForchaServerWorkerError(error, worker_stream)| {
                 Some(FForchaServerWorkerState::Error {
-                    web_socket_stream,
+                    worker_stream,
                     error,
                 })
             })
@@ -72,24 +75,31 @@ impl FForchaServerWorkerState {
         self,
         worker_id: String,
         server_queue_runner: FForchaServerQueueRunner,
-        authenticator: FForchaServerAuthenticator,
         settings: FForchaServerWorkerSettings,
     ) -> Result<Option<Self>, FForchaServerWorkerError> {
         trace!("Worker [{worker_id}] New worker state available: {self:?}");
 
         match self {
-            FForchaServerWorkerState::Establishing { tcp_stream } => {
+            FForchaServerWorkerState::Establishing {
+                tcp_stream,
+                tls_acceptor,
+                authenticator,
+            } => {
                 debug!("Worker [{worker_id}] Worker is establishing");
-                let next_state =
-                    Self::process_establishing_worker(worker_id.clone(), tcp_stream, authenticator)
-                        .await?;
+                let next_state = Self::process_establishing_worker(
+                    worker_id.clone(),
+                    tcp_stream,
+                    tls_acceptor,
+                    authenticator,
+                )
+                .await?;
                 Ok(Some(next_state))
             }
-            FForchaServerWorkerState::Idle { web_socket_stream } => {
+            FForchaServerWorkerState::Idle { worker_stream } => {
                 debug!("Worker [{worker_id}] Worker is idle");
                 let next_state = Self::process_idle_worker(
                     worker_id.clone(),
-                    web_socket_stream,
+                    worker_stream,
                     server_queue_runner,
                     settings,
                 )
@@ -97,7 +107,7 @@ impl FForchaServerWorkerState {
                 Ok(Some(next_state))
             }
             FForchaServerWorkerState::Running {
-                web_socket_stream,
+                worker_stream,
                 server_queue_task_permit,
                 last_progress,
             } => {
@@ -108,7 +118,7 @@ impl FForchaServerWorkerState {
                 );
                 let next_state = Self::process_running_worker(
                     worker_id.clone(),
-                    web_socket_stream,
+                    worker_stream,
                     server_queue_task_permit,
                     settings.worker_timeout,
                 )
@@ -116,7 +126,7 @@ impl FForchaServerWorkerState {
                 Ok(Some(next_state))
             }
             FForchaServerWorkerState::Finishing {
-                web_socket_stream,
+                worker_stream,
                 server_queue_task_permit,
             } => {
                 debug!(
@@ -125,14 +135,14 @@ impl FForchaServerWorkerState {
                 );
                 let next_state = Self::process_finishing_worker(
                     worker_id.clone(),
-                    web_socket_stream,
+                    worker_stream,
                     server_queue_task_permit,
                 )
                 .await?;
                 Ok(Some(next_state))
             }
             FForchaServerWorkerState::Cancelling {
-                web_socket_stream,
+                worker_stream,
                 server_queue_task_permit,
             } => {
                 debug!(
@@ -141,27 +151,27 @@ impl FForchaServerWorkerState {
                 );
                 let next_state = Self::process_cancelling_worker(
                     worker_id.clone(),
-                    web_socket_stream,
+                    worker_stream,
                     server_queue_task_permit,
                 )
                 .await?;
                 Ok(Some(next_state))
             }
             FForchaServerWorkerState::Error {
-                web_socket_stream,
+                worker_stream,
                 error,
             } => {
                 debug!("Worker [{worker_id}] Worker is in error state: {error:?}");
                 let next_state =
-                    Self::process_error_worker(worker_id.clone(), web_socket_stream, error).await;
+                    Self::process_error_worker(worker_id.clone(), worker_stream, error).await;
                 Ok(next_state)
             }
             FForchaServerWorkerState::Closing {
-                web_socket_stream,
+                worker_stream,
                 reason,
             } => {
                 debug!("Worker [{worker_id}] Worker connection is closing with reason: {reason:?}");
-                Self::process_closing_worker(worker_id.clone(), web_socket_stream, reason).await;
+                Self::process_closing_worker(worker_id.clone(), worker_stream, reason).await;
                 trace!("Worker [{worker_id}] Worker dropped");
                 Ok(None)
             }
@@ -171,43 +181,53 @@ impl FForchaServerWorkerState {
     async fn process_establishing_worker(
         worker_id: String,
         tcp_stream: TcpStream,
+        tls_acceptor: Option<TlsAcceptor>,
         authenticator: FForchaServerAuthenticator,
     ) -> Result<Self, FForchaServerWorkerError> {
-        let server_result = ServerBuilder::new().accept(tcp_stream).await;
-        match server_result {
-            Ok((request, web_socket_stream)) => {
-                trace!("Worker [{worker_id}] Authenticating worker");
-
-                authenticator
-                    .authenticate(request)
-                    .map_err(|error| FForchaServerWorkerError(error, None))?;
-
-                Ok(FForchaServerWorkerState::Idle { web_socket_stream })
+        let maybe_tls_stream = match tls_acceptor {
+            Some(tls_acceptor) => {
+                let tls_stream = tls_acceptor
+                    .accept(tcp_stream)
+                    .await
+                    .map_err(|error| FForchaServerWorkerError(error.into(), None))?;
+                FForchaServerMaybeTlsStream::Encrypted(tls_stream)
             }
-            Err(error) => Err(FForchaServerWorkerError(
-                FForchaServerError::WebSockets(error),
-                None,
-            )),
-        }
+            None => FForchaServerMaybeTlsStream::Plain(tcp_stream),
+        };
+
+        let (request, web_socket_stream) = ServerBuilder::new()
+            .accept(maybe_tls_stream)
+            .await
+            .map_err(|error| FForchaServerWorkerError(error.into(), None))?;
+
+        trace!("Worker [{worker_id}] Authenticating worker");
+
+        authenticator
+            .authenticate(request)
+            .map_err(|error| FForchaServerWorkerError(error, None))?;
+
+        Ok(FForchaServerWorkerState::Idle {
+            worker_stream: web_socket_stream.into(),
+        })
     }
 
     async fn process_idle_worker(
         worker_id: String,
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         server_queue_runner: FForchaServerQueueRunner,
         settings: FForchaServerWorkerSettings,
     ) -> Result<Self, FForchaServerWorkerError> {
         let server_queue_task_permit = server_queue_runner.start_pop().await;
         Self::wrap_cancellable_with_timeout(
-            web_socket_stream,
+            worker_stream,
             server_queue_task_permit,
             None,
-            |_, web_socket_stream, server_queue_task_permit| FForchaServerWorkerState::Running {
-                web_socket_stream,
+            |_, worker_stream, server_queue_task_permit| FForchaServerWorkerState::Running {
+                worker_stream,
                 server_queue_task_permit,
                 last_progress: 0.0,
             },
-            |web_socket_stream, task| async move {
+            |worker_stream, task| async move {
                 trace!(
                     "Worker [{worker_id}] Sending task '{}' to worker",
                     task.id()
@@ -220,10 +240,10 @@ impl FForchaServerWorkerState {
                 Self::send_message_to_worker(
                     worker_id.clone(),
                     Message::text(serde_json::to_string(&task_assignment_message)?),
-                    web_socket_stream,
+                    worker_stream,
                 )
                 .await?;
-                Self::wait_for_worker_acknowledgement(worker_id.clone(), Some(task.id()), web_socket_stream).await?;
+                Self::wait_for_worker_acknowledgement(worker_id.clone(), Some(task.id()), worker_stream).await?;
 
                 let input_asset = task.input_asset();
 
@@ -255,8 +275,8 @@ impl FForchaServerWorkerState {
                     }
                 });
 
-                Self::send_messages_to_worker(worker_id.clone(), web_socket_stream, Box::pin(stream)).await?;
-                Self::wait_for_worker_acknowledgement(worker_id.clone(), Some(task.id()), web_socket_stream).await?;
+                Self::send_messages_to_worker(worker_id.clone(), worker_stream, Box::pin(stream)).await?;
+                Self::wait_for_worker_acknowledgement(worker_id.clone(), Some(task.id()), worker_stream).await?;
 
                 Ok(())
             }.boxed(),
@@ -266,32 +286,32 @@ impl FForchaServerWorkerState {
 
     async fn process_running_worker(
         worker_id: String,
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         server_queue_task_permit: FForchaServerQueueTaskPermit,
         worker_timeout: Duration,
     ) -> Result<Self, FForchaServerWorkerError> {
         Self::wrap_cancellable_with_timeout(
-            web_socket_stream,
+            worker_stream,
             server_queue_task_permit,
             Some(worker_timeout),
-            |progress, web_socket_stream, server_queue_task_permit| {
+            |progress, worker_stream, server_queue_task_permit| {
                 if let Some(progress) = progress {
                     FForchaServerWorkerState::Running {
-                        web_socket_stream,
+                        worker_stream,
                         server_queue_task_permit,
                         last_progress: progress,
                     }
                 } else {
                     FForchaServerWorkerState::Finishing {
-                        web_socket_stream,
+                        worker_stream,
                         server_queue_task_permit,
                     }
                 }
             },
-            |web_socket_stream, task| async move {
+            |worker_stream, task| async move {
                 let progress = Self::wait_for_mapped_and_filtered_message(
                     worker_id.clone(),
-                    web_socket_stream,
+                    worker_stream,
                     |message| {
                         match message {
                             FForchaMessage::TaskProgress { task_id, progress } => if task_id == task.id() {
@@ -320,7 +340,7 @@ impl FForchaServerWorkerState {
 
     async fn process_finishing_worker(
         worker_id: String,
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         server_queue_task_permit: FForchaServerQueueTaskPermit,
     ) -> Result<Self, FForchaServerWorkerError> {
         unimplemented!();
@@ -328,7 +348,7 @@ impl FForchaServerWorkerState {
 
     async fn process_cancelling_worker(
         worker_id: String,
-        web_socket_stream: WebSocketStream<TcpStream>,
+        worker_stream: FForchaServerWorkerStream,
         server_queue_task_permit: FForchaServerQueueTaskPermit,
     ) -> Result<Self, FForchaServerWorkerError> {
         unimplemented!();
@@ -336,7 +356,7 @@ impl FForchaServerWorkerState {
 
     async fn process_error_worker(
         worker_id: String,
-        web_socket_stream: Option<WebSocketStream<TcpStream>>,
+        worker_stream: Option<FForchaServerWorkerStream>,
         error: FForchaServerError,
     ) -> Option<Self> {
         warn!("Worker [{worker_id}] Worker encountered a fatal error: {error:?}");
@@ -346,7 +366,7 @@ impl FForchaServerWorkerState {
             return None;
         }
 
-        if let Some(web_socket_stream) = web_socket_stream {
+        if let Some(worker_stream) = worker_stream {
             match error {
                 FForchaServerError::UnauthorizedWorker(request) => {
                     warn!(
@@ -354,16 +374,16 @@ impl FForchaServerWorkerState {
                     );
 
                     Some(FForchaServerWorkerState::Closing {
-                        web_socket_stream,
+                        worker_stream,
                         reason: "Unauthorized".to_string(),
                     })
                 }
                 FForchaServerError::WorkerTimedOut => Some(FForchaServerWorkerState::Closing {
-                    web_socket_stream,
+                    worker_stream,
                     reason: "Timed out".to_string(),
                 }),
                 _ => Some(FForchaServerWorkerState::Closing {
-                    web_socket_stream,
+                    worker_stream,
                     reason: "Fatal error".to_string(),
                 }),
             }
@@ -374,24 +394,24 @@ impl FForchaServerWorkerState {
 
     async fn process_closing_worker(
         worker_id: String,
-        mut web_socket_stream: WebSocketStream<TcpStream>,
+        mut worker_stream: FForchaServerWorkerStream,
         reason: String,
     ) {
         let message = Message::close(Some(CloseCode::NORMAL_CLOSURE), reason.as_str());
 
         if let Err(error) =
-            Self::send_message_to_worker(worker_id.clone(), message, &mut web_socket_stream).await
+            Self::send_message_to_worker(worker_id.clone(), message, &mut worker_stream).await
         {
             warn!("Worker [{worker_id}] Failed to send message to worker with error: {error:?}");
         }
 
-        if let Err(error) = web_socket_stream.close().await {
+        if let Err(error) = worker_stream.close().await {
             warn!("Worker [{worker_id}] Failed to close worker connection with error: {error:?}");
         }
     }
 
     async fn wrap_cancellable_with_timeout<T, M, F>(
-        mut web_socket_stream: WebSocketStream<TcpStream>,
+        mut worker_stream: FForchaServerWorkerStream,
         mut server_queue_task_permit: FForchaServerQueueTaskPermit,
         worker_timeout: Option<Duration>,
         mapper: M,
@@ -400,12 +420,12 @@ impl FForchaServerWorkerState {
     where
         M: FnOnce(
                 T,
-                WebSocketStream<TcpStream>,
+                FForchaServerWorkerStream,
                 FForchaServerQueueTaskPermit,
             ) -> FForchaServerWorkerState
             + Send,
         for<'f> F: FnOnce(
-            &'f mut WebSocketStream<TcpStream>,
+            &'f mut FForchaServerWorkerStream,
             &'f FForchaTask,
         ) -> BoxFuture<'f, Result<T, FForchaServerError>>,
     {
@@ -415,18 +435,18 @@ impl FForchaServerWorkerState {
             .into();
 
         select! {
-            t = f(&mut web_socket_stream, task) => {
+            t = f(&mut worker_stream, task) => {
                 match t {
-                    Ok(t) => Ok(mapper(t, web_socket_stream, server_queue_task_permit)),
-                    Err(error) => Err(FForchaServerWorkerError(error, Some(web_socket_stream))),
+                    Ok(t) => Ok(mapper(t, worker_stream, server_queue_task_permit)),
+                    Err(error) => Err(FForchaServerWorkerError(error, Some(worker_stream))),
                 }
             },
             _ = cancel_receiver => Ok(FForchaServerWorkerState::Cancelling {
-                web_socket_stream,
+                worker_stream,
                 server_queue_task_permit,
             }),
             Some(_) = worker_timeout => {
-                Err(FForchaServerWorkerError(FForchaServerError::WorkerTimedOut, Some(web_socket_stream)))
+                Err(FForchaServerWorkerError(FForchaServerError::WorkerTimedOut, Some(worker_stream)))
             },
         }
     }
@@ -434,11 +454,11 @@ impl FForchaServerWorkerState {
     async fn wait_for_worker_acknowledgement(
         worker_id: String,
         expected_task_id: Option<String>,
-        web_socket_stream: &mut WebSocketStream<TcpStream>,
+        worker_stream: &mut FForchaServerWorkerStream,
     ) -> Result<(), FForchaServerError> {
         trace!("Worker [{worker_id}] Waiting for worker acknowledgement");
 
-        Self::wait_for_mapped_and_filtered_message(worker_id.clone(), web_socket_stream, |message| {
+        Self::wait_for_mapped_and_filtered_message(worker_id.clone(), worker_stream, |message| {
             match message {
                 FForchaMessage::Acknowledgement { task_id } => if task_id.as_ref() != expected_task_id.as_ref() {
                     info!("Worker [{worker_id}] Received unexpected acknowledgement for task: {task_id:?}");
@@ -458,13 +478,13 @@ impl FForchaServerWorkerState {
 
     async fn wait_for_mapped_and_filtered_message<M, T>(
         worker_id: String,
-        web_socket_stream: &mut WebSocketStream<TcpStream>,
+        worker_stream: &mut FForchaServerWorkerStream,
         mut mapper: M,
     ) -> Result<T, FForchaServerError>
     where
         M: FnMut(FForchaMessage) -> Option<T>,
     {
-        while let Some(message) = web_socket_stream.try_next().await? {
+        while let Some(message) = worker_stream.try_next().await? {
             if !message.is_text() {
                 trace!("Worker [{worker_id}] Received non-text message from worker: {message:?}");
                 continue;
@@ -482,28 +502,28 @@ impl FForchaServerWorkerState {
     async fn send_message_to_worker(
         worker_id: String,
         message: Message,
-        web_socket_stream: &mut WebSocketStream<TcpStream>,
+        worker_stream: &mut FForchaServerWorkerStream,
     ) -> Result<(), FForchaServerError> {
         trace!("Worker [{worker_id}] Sending message to worker: {message:?}");
-        web_socket_stream.send(message).await?;
+        worker_stream.send(message).await?;
         Ok(())
     }
 
     async fn send_messages_to_worker<S>(
         worker_id: String,
-        web_socket_stream: &mut WebSocketStream<TcpStream>,
-        mut message_supplier: S,
+        worker_stream: &mut FForchaServerWorkerStream,
+        mut message_stream: S,
     ) -> Result<(), FForchaServerError>
     where
         S: TryStream<Ok = Message, Error = FForchaServerError> + Unpin,
     {
-        while let Some(message) = message_supplier.try_next().await? {
+        while let Some(message) = message_stream.try_next().await? {
             trace!("Worker [{worker_id}] Feeding message to worker: {message:?}");
-            web_socket_stream.feed(message).await?;
+            worker_stream.feed(message).await?;
         }
 
         trace!("Worker [{worker_id}] Flushing messages to worker");
-        web_socket_stream.flush().await?;
+        worker_stream.flush().await?;
 
         Ok(())
     }

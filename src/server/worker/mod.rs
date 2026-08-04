@@ -8,13 +8,14 @@ use nanoid::nanoid;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsAcceptor;
 
 pub mod state;
+pub mod stream;
 
 pub struct FForchaServerWorker {
     id: String,
     server_queue_runner: FForchaServerQueueRunner,
-    authenticator: FForchaServerAuthenticator,
     settings: FForchaServerWorkerSettings,
     next_state_future: BoxFuture<'static, Option<FForchaServerWorkerState>>,
 }
@@ -22,20 +23,24 @@ pub struct FForchaServerWorker {
 impl FForchaServerWorker {
     pub fn new(
         tcp_stream: TcpStream,
+        tls_acceptor: Option<TlsAcceptor>,
         server_queue_runner: FForchaServerQueueRunner,
         authenticator: FForchaServerAuthenticator,
         settings: FForchaServerWorkerSettings,
     ) -> Self {
         let worker_id = nanoid!();
-        let worker_state = FForchaServerWorkerState::Establishing { tcp_stream };
+        let worker_state = FForchaServerWorkerState::Establishing {
+            tcp_stream,
+            tls_acceptor,
+            authenticator,
+        };
 
         Self {
             id: worker_id.clone(),
             server_queue_runner: server_queue_runner.clone(),
-            authenticator: authenticator.clone(),
             settings,
             next_state_future: worker_state
-                .process(worker_id, server_queue_runner, authenticator, settings)
+                .process(worker_id, server_queue_runner, settings)
                 .boxed(),
         }
     }
@@ -50,13 +55,11 @@ impl Future for FForchaServerWorker {
                 Some(worker_state) => Poll::Ready(Some(FForchaServerWorker {
                     id: self.id.clone(),
                     server_queue_runner: self.server_queue_runner.clone(),
-                    authenticator: self.authenticator.clone(),
                     settings: self.settings,
                     next_state_future: worker_state
                         .process(
                             self.id.clone(),
                             self.server_queue_runner.clone(),
-                            self.authenticator.clone(),
                             self.settings,
                         )
                         .boxed(),

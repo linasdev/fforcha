@@ -18,10 +18,10 @@ pub struct FForchaServerSettings {
     pub bind_port: u16,
 
     #[serde(default)]
-    pub tls_certificate_path: Option<PathBuf>,
+    pub tls_certificate_chain_path: Option<PathBuf>,
 
     #[serde(default)]
-    pub tls_key_path: Option<PathBuf>,
+    pub tls_private_key_path: Option<PathBuf>,
 
     #[serde(default)]
     pub worker: FForchaServerWorkerSettings,
@@ -43,8 +43,8 @@ impl Default for FForchaServerSettings {
             shared_secret: default_shared_secret(),
             bind_ip: default_bind_ip(),
             bind_port: default_bind_port(),
-            tls_certificate_path: Default::default(),
-            tls_key_path: Default::default(),
+            tls_certificate_chain_path: Default::default(),
+            tls_private_key_path: Default::default(),
             worker: Default::default(),
         }
     }

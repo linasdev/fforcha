@@ -8,6 +8,9 @@ pub enum FForchaServerError {
     IO(io::Error),
     WebSockets(tokio_websockets::Error),
     SerdeJson(serde_json::Error),
+    Rustls(rustls::Error),
+    MissingTlsDetails,
+    FailedToLoadPrivateKey,
     UnauthorizedWorker(Request<()>),
     WorkerTimedOut,
     WorkerConnectionClosed,
@@ -34,5 +37,11 @@ impl From<tokio_websockets::Error> for FForchaServerError {
 impl From<serde_json::Error> for FForchaServerError {
     fn from(error: serde_json::Error) -> Self {
         Self::SerdeJson(error)
+    }
+}
+
+impl From<rustls::Error> for FForchaServerError {
+    fn from(error: rustls::Error) -> Self {
+        Self::Rustls(error)
     }
 }
